@@ -16,14 +16,14 @@
     "ConfigBucketName" : {
       "Description" : "The S3 bucket containing server config files",
       "Type" : "String",
-      "Default" : "stp-server-configs",
+      "Default" : "my-server-configs-bucket",
       "ConstraintDescription" : "must be a string."
     },
 
     "SourceBucketName" : {
       "Description" : "The S3 bucket containing source",
       "Type" : "String",
-      "Default" : "stp-code",
+      "Default" : "my-code-bucket",
       "ConstraintDescription" : "must be a string."
     },
     
@@ -38,7 +38,7 @@
       "Description" : "Base website URL for staging environment.",
       "Type" : "String",
       "Default" : "http://staging.example.com",
-      ConstraintDescription" : "must be a string."
+      "ConstraintDescription" : "must be a string."
     },    
 
     "BastionSSHFrom" : {
@@ -54,21 +54,21 @@
     "BastionKey" : {
       "Description" : "Keypair name for access into the bastion host",
       "Type" : "String",
-      "Default" : "stp-bastion-key",
+      "Default" : "my-bastion-key",
       "ConstraintDescription" : "must be an existing keypair name."
     },  
 
     "AppStageKey" : {
       "Description" : "Keypair name for access into the app servers for staging env",
       "Type" : "String",
-      "Default" : "stp-app-stage-key",
+      "Default" : "my-app-stage-key",
       "ConstraintDescription" : "must be an existing keypair name."
     },
     
     "AppProdKey" : {
       "Description" : "Keypair name for access into the app servers for production env",
       "Type" : "String",
-      "Default" : "stp-app-prod-key",
+      "Default" : "my-app-prod-key",
       "ConstraintDescription" : "must be an existing keypair name."
     },     
 
