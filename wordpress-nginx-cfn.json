@@ -38,7 +38,7 @@
       "Description" : "Base website URL for staging environment.",
       "Type" : "String",
       "Default" : "http://staging.example.com",
-      ConstraintDescription" : "must be a string."
+      "ConstraintDescription" : "must be a string."
     },    
 
     "BastionSSHFrom" : {
