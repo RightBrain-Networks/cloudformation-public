@@ -1,0 +1,2077 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+
+  "Description" : "Example Wordpress deployment contained in a VPC and composed of both staging and production environments. (designed and deployed by Jamie Begin, Feb-2013. Last updated 04-April-2013). Uses a 'provision at boot' strategy to customize the base Amazon AMI to contain Nginx, PHP-FPM, and Varnish. This example assumes that the Wordpress source and customized server config files are stored in existing S3 buckets.",
+
+  "Parameters" : {
+
+    "DeployIAMUser" : {
+      "Description" : "The ARN for IAM user account that the CI server uses to publish app versions to S3",
+      "Type" : "String",
+      "Default" : "arn:aws:iam::1234567890:user/server-config-bucket-user",
+      "AllowedPattern" : "^arn\\:aws\\:iam\\:\\:[0-9]+\\:user/[0-9a-zA-Z\\-]+$",      
+      "ConstraintDescription" : "must be a valid ARN."
+    },
+
+    "ConfigBucketName" : {
+      "Description" : "The S3 bucket containing server config files",
+      "Type" : "String",
+      "Default" : "stp-server-configs",
+      "ConstraintDescription" : "must be a string."
+    },
+
+    "SourceBucketName" : {
+      "Description" : "The S3 bucket containing source",
+      "Type" : "String",
+      "Default" : "stp-code",
+      "ConstraintDescription" : "must be a string."
+    },
+    
+    "SiteURLProd" : {
+      "Description" : "Base website URL for production environment.",
+      "Type" : "String",
+      "Default" : "http://www.example.com",
+      "ConstraintDescription" : "must be a string."
+    },
+    
+    "SiteURLStage" : {
+      "Description" : "Base website URL for staging environment.",
+      "Type" : "String",
+      "Default" : "http://staging.example.com",
+      ConstraintDescription" : "must be a string."
+    },    
+
+    "BastionSSHFrom" : {
+      "Description" : "Lockdown SSH access to the bastion host",
+      "Type" : "String",
+      "MinLength": "9",
+      "MaxLength": "18",
+      "Default" : "0.0.0.0/0",
+      "AllowedPattern" : "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})",
+      "ConstraintDescription" : "must be a valid CIDR range of the form x.x.x.x/x."
+    },
+
+    "BastionKey" : {
+      "Description" : "Keypair name for access into the bastion host",
+      "Type" : "String",
+      "Default" : "stp-bastion-key",
+      "ConstraintDescription" : "must be an existing keypair name."
+    },  
+
+    "AppStageKey" : {
+      "Description" : "Keypair name for access into the app servers for staging env",
+      "Type" : "String",
+      "Default" : "stp-app-stage-key",
+      "ConstraintDescription" : "must be an existing keypair name."
+    },
+    
+    "AppProdKey" : {
+      "Description" : "Keypair name for access into the app servers for production env",
+      "Type" : "String",
+      "Default" : "stp-app-prod-key",
+      "ConstraintDescription" : "must be an existing keypair name."
+    },     
+
+    "NotifyEmail" : {
+      "Description" : "Email address to receive SNS messages",
+      "Type": "String",
+      "Default" : "ops@example.com",
+      "MinLength": "4",
+      "MaxLength": "128",
+      "AllowedPattern" : "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,6}$",
+      "ConstraintDescription" : "must be a valid email address."
+    },
+    
+    "NotifyDisplayName" : {
+      "Description" : "SNS topic display name.",
+      "Type": "String",
+      "Default" : "AWS-STP",
+      "MinLength": "1",
+      "MaxLength": "100",
+      "ConstraintDescription" : "must be a valid string of 100 characters or less."
+    },    
+
+    "AppInstanceType" : {
+      "Description" : "Web server EC2 instance type",
+      "Type" : "String",
+      "Default" : "m1.small",
+      "AllowedValues" : [ "t1.micro","m1.small","m1.medium","m1.large","m1.xlarge","m2.xlarge","m2.2xlarge","m2.4xlarge","c1.medium","c1.xlarge","cc1.4xlarge","cc2.8xlarge","cg1.4xlarge"],
+      "ConstraintDescription" : "must be a valid EC2 instance type."
+    },
+
+    "NATInstanceType" : {
+      "Description" : "NAT instance type",
+      "Type" : "String",
+      "Default" : "t1.micro",
+      "AllowedValues" : [ "t1.micro","m1.small","m1.medium"],
+      "ConstraintDescription" : "must be a valid EC2 instance type."
+    },
+
+    "BastionInstanceType" : {
+      "Description" : "Bastion host instance type",
+      "Type" : "String",
+      "Default" : "t1.micro",
+      "AllowedValues" : [ "t1.micro","m1.small","m1.medium"],
+      "ConstraintDescription" : "must be a valid EC2 instance type."
+    },
+
+    "AvailabilityZone1" : {
+      "Description" : "Primary availability zone",
+      "Type" : "String",
+      "Default" : "us-east-1c",
+      "AllowedValues" : ["us-east-1a", "us-east-1b", "us-east-1c", "us-east-1d"],
+      "ConstraintDescription" : "must be a valid availability zone."
+    },
+
+    "AvailabilityZone2" : {
+      "Description" : "Secondary availability zone",
+      "Type" : "String",
+      "Default" : "us-east-1d",
+      "AllowedValues" : ["us-east-1a", "us-east-1b", "us-east-1c", "us-east-1d"],
+      "ConstraintDescription" : "must be a valid availability zone."
+    },    
+
+    "MinAppCountProd" : {
+      "Description" : "Min number of EC2 instances to launch",
+      "Type" : "Number",
+      "Default" : "2",
+      "MinValue": "2",
+      "MaxValue": "10"
+    },
+
+    "MaxAppCountProd" : {
+      "Description" : "Max number of EC2 instances to launch",
+      "Type" : "Number",
+      "Default" : "6",
+      "MinValue": "2",
+      "MaxValue": "10"
+    },
+    
+    "ELBLatencyThreshold" : {
+      "Description" : "Max number seconds permissible from the time an Elastic Load Balancer passes a request to an app server until it gets a response. Exceeding this limit sounds an alarm.",
+      "Type" : "Number",
+      "Default" : "4",
+      "MinValue": "1",
+      "MaxValue": "60",
+      "ConstraintDescription" : "must be a number from 1 to 60."      
+    },    
+
+    "StickySessionLength": {
+      "Description" : "Cookie lifetime (in seconds) for the sticky session on the ELBs",
+      "Type": "Number",
+      "Default" : "3600",
+      "MinValue": "0",
+      "MaxValue": "60000",
+      "ConstraintDescription" : "must be a valid integer"
+    },
+    
+    "DBBackupRetentionProd": {
+      "Description" : "Number of days worth of RDS snapshots to retain",
+      "Type": "Number",
+      "Default" : "7",
+      "MinValue": "0",
+      "MaxValue": "30",
+      "ConstraintDescription" : "must be a valid integer"
+    },
+        
+    "DBCreateFromSnapshot": {
+      "NoEcho": "false",
+      "Description" : "The name of the RDS snapshot that will be used to create the new database",
+      "Default" : "new-snap",
+      "Type": "String",
+      "ConstraintDescription" : "must begin with a letter and contain only alphanumeric characters."
+    },
+    
+    "DBName": {
+      "NoEcho": "false",
+      "Description" : "The database name",
+      "Type": "String",
+      "MinLength": "1",
+      "MaxLength": "32",
+      "Default" : "my-database",
+      "AllowedPattern" : "[a-zA-Z][a-zA-Z0-9]*",
+      "ConstraintDescription" : "must begin with a letter and contain only alphanumeric characters."
+    },
+
+    "DBUser": {
+      "NoEcho": "false",
+      "Description" : "The database user name",
+      "Type": "String",
+      "MinLength": "1",
+      "MaxLength": "16",
+      "Default" : "dbuser",
+      "AllowedPattern" : "[a-zA-Z][a-zA-Z0-9]*",
+      "ConstraintDescription" : "must begin with a letter and contain only alphanumeric characters."
+    },
+    
+    "DBPassword": {
+      "NoEcho": "true",
+      "Description" : "The database password",
+      "Type": "String",
+      "Default":	"password",
+      "MinLength": "1",
+      "MaxLength": "41",
+      "AllowedPattern" : "[a-zA-Z0-9]*",
+      "ConstraintDescription" : "must contain only alphanumeric characters."
+    },
+    
+    "DBClassProd" : {
+      "Default" : "db.m1.medium",
+      "Description" : "Database instance class for production environment",
+      "Type" : "String",
+      "AllowedValues" : [ "db.t1.micro", "db.m1.small", "db.m1.medium", "db.m1.large", "db.m1.xlarge", "db.m2.xlarge", "db.m2.2xlarge", "db.m2.4xlarge" ],
+      "ConstraintDescription" : "must select a valid database instance type."
+    },
+
+    "DBClassStage" : {
+      "Default" : "db.t1.micro",
+      "Description" : "Database instance class for staging environment",
+      "Type" : "String",
+      "AllowedValues" : [ "db.t1.micro", "db.m1.small", "db.m1.medium", "db.m1.large", "db.m1.xlarge", "db.m2.xlarge", "db.m2.2xlarge", "db.m2.4xlarge" ],
+      "ConstraintDescription" : "must select a valid database instance type."
+    },
+
+    "DBAllocatedStorage" : {
+      "Default": "10",
+      "Description" : "The size of the database (Gb)",
+      "Type": "Number",
+      "MinValue": "5",
+      "MaxValue": "1024",
+      "ConstraintDescription" : "must be between 5 and 1024Gb."
+    }
+    
+    
+  },
+
+  "Mappings" : {
+    "AWSInstanceType2Arch" : {
+      "t1.micro"    : { "Arch" : "64" },
+      "m1.small"    : { "Arch" : "64" },
+      "m1.medium"   : { "Arch" : "64" },
+      "m1.large"    : { "Arch" : "64" },
+      "m1.xlarge"   : { "Arch" : "64" },
+      "m2.xlarge"   : { "Arch" : "64" },
+      "m2.2xlarge"  : { "Arch" : "64" },
+      "m2.4xlarge"  : { "Arch" : "64" },
+      "m3.xlarge"   : { "Arch" : "64" },
+      "m3.2xlarge"  : { "Arch" : "64" },
+      "c1.medium"   : { "Arch" : "64" },
+      "c1.xlarge"   : { "Arch" : "64" },
+      "cc1.4xlarge" : { "Arch" : "64HVM" },
+      "cc2.8xlarge" : { "Arch" : "64HVM" },
+      "cg1.4xlarge" : { "Arch" : "64HVM" }
+    },
+
+   "AWSRegionArch2AMI" : {
+	"us-east-1"	 : { "32" : "ami-5675ee3f", "64" : "ami-3275ee5b", "64HVM" : "ami-da76edb3" },
+	"us-west-2"	 : { "32" : "ami-d0be2ae0", "64" : "ami-ecbe2adc", "64HVM" : "ami-f4be2ac4" },
+	"us-west-1"	 : { "32" : "ami-d8d1fc9d", "64" : "ami-66d1fc23", "64HVM" :"ami-b0d6fbf5" },
+	"eu-west-1"	 : { "32" : "ami-6893991c", "64" : "ami-44939930", "64HVM" : "ami-a29298d6" },
+	"ap-southeast-1"	: { "32" : "ami-a29ed2f0", "64" : "ami-aa9ed2f8", "64HVM" : "ami-ec9ed2be" },
+	"ap-northeast-1"	: { "32" : "ami-0f3fbf0e", "64" : "ami-173fbf16", "64HVM" : "ami-833ebe82" },
+	"ap-southeast-2"	: { "32" : "ami-383eaf02", "64" : "ami-363eaf0c", "64HVM" : "ami-ce3faef4" },
+	"sa-east-1"	 : { "32" : "ami-a56bb0b8", "64" : "ami-dd6bb0c0", "64HVM" :"ami-bb6bb0a6" }
+   },
+
+    "AWSRegionNATAMI" : {
+      "us-east-1"      : { "32" : "ami-2e1bc047", "64" : "ami-f619c29f" },
+      "us-west-1"      : { "32" : "ami-c7cc9e82", "64" : "ami-3bcc9e7e" },
+      "us-west-2"      : { "32" : "ami-6eff725e", "64" : "ami-52ff7262" },
+      "eu-west-1"      : { "32" : "ami-1de2d969", "64" : "ami-e5e2d991" },
+      "sa-east-1"      : { "32" : "ami-0439e619", "64" : "ami-0039e61d" },
+      "ap-southeast-1" : { "32" : "ami-425a2010", "64" : "ami-5e5a200c" },
+      "ap-northeast-1" : { "32" : "ami-7871c579", "64" : "ami-7671c577" }
+    },
+
+    "SubnetConfig" : {
+      "VPC"      : { "CIDR" : "172.17.0.0/20" },
+      "ProdPublic1"  : { "CIDR" : "172.17.0.0/24" },
+      "ProdPublic2"  : { "CIDR" : "172.17.1.0/24" },
+      "ProdApp1" : { "CIDR" : "172.17.2.0/24" },
+      "ProdApp2" : { "CIDR" : "172.17.3.0/24" },
+      "ProdDB1" : { "CIDR" : "172.17.4.0/24" },
+      "ProdDB2" : { "CIDR" : "172.17.5.0/24" },
+      "StagePublic" : { "CIDR" : "172.17.6.0/24" },
+      "StageApp" : { "CIDR" : "172.17.7.0/24" },
+      "StageDB1" : { "CIDR" : "172.17.8.0/24" },
+	  "StageDB2" : { "CIDR" : "172.17.9.0/24" },
+	  "DMZ" : { "CIDR" : "172.17.10.0/27" }
+    },
+
+    "RDSInstanceLimitsMap" : {
+      "db.m1.micro" : {
+        "CPULimit" : "80",
+        "FreeStorageSpaceLimit" : "1024",
+        "FreeMemoryLimit" : "64",
+        "ReadIOPSLimit" : "100",
+        "WriteIOPSLimit" : "500"
+      },    
+      "db.m1.small" : {
+        "CPULimit" : "80",
+        "FreeStorageSpaceLimit" : "1024",
+        "FreeMemoryLimit" : "128",
+        "ReadIOPSLimit" : "100",
+        "WriteIOPSLimit" : "500"
+      },
+      "db.m1.medium" : {
+        "CPULimit" : "80",
+        "FreeStorageSpaceLimit" : "1024",
+        "FreeMemoryLimit" : "256",        
+        "ReadIOPSLimit" : "100",
+        "WriteIOPSLimit" : "500"
+      },      
+      "db.m1.large" : {
+        "CPULimit" : "80",
+        "FreeStorageSpaceLimit" : "1024",
+        "FreeMemoryLimit" : "256",        
+        "ReadIOPSLimit" : "100",
+        "WriteIOPSLimit" : "500"
+      },
+      "db.m1.xlarge" : {
+        "CPULimit" : "80",
+        "FreeStorageSpaceLimit" : "1024",
+        "FreeMemoryLimit" : "256",        
+        "ReadIOPSLimit" : "100",
+        "WriteIOPSLimit" : "500"
+      },
+      "db.m2.xlarge" : {
+        "CPULimit" : "80",
+        "FreeStorageSpaceLimit" : "1024",
+        "FreeMemoryLimit" : "256",        
+        "ReadIOPSLimit" : "100",
+        "WriteIOPSLimit" : "500"
+      },
+      "db.m2.2xlarge" : {
+        "CPULimit" : "80",
+        "FreeStorageSpaceLimit" : "1024",
+        "FreeMemoryLimit" : "256",        
+        "ReadIOPSLimit" : "100",
+        "WriteIOPSLimit" : "500"
+      },
+      "db.m2.4xlarge" : {
+        "CPULimit" : "80",
+        "FreeStorageSpaceLimit" : "1024",
+        "FreeMemoryLimit" : "256",        
+        "ReadIOPSLimit" : "100",
+        "WriteIOPSLimit" : "500"
+      }
+    }    
+    
+  },
+
+  "Resources" : {
+
+    "CfnUser" : {
+      "Type" : "AWS::IAM::User",
+      "Properties" : {
+        "Path": "/",
+        "Policies": [
+          {"PolicyName": "root",
+		   "PolicyDocument": { "Statement":[{
+			   "Effect"   : "Allow",
+			   "Action"   : [
+					"cloudformation:DescribeStackResource",
+					"s3:GetObject",
+					"iam:GetUser",
+					"iam:GetUserPolicy",
+					"iam:ListUserPolicies",
+					"iam:ListUsers"],
+			   "Resource" : "*"
+		  }]}},
+		  
+          {"PolicyName": "ConfigBucket",
+		   "PolicyDocument": { "Statement":[{
+			   "Effect"   : "Allow",
+			   "Action"   : "*",
+			   "Resource" : { "Fn::Join" : ["", ["arn:aws:s3:::", { "Ref" : "ConfigBucketName" }]]}
+		  }]}},	 
+
+          {"PolicyName": "SourceBucket",
+		   "PolicyDocument": { "Statement":[{
+			   "Effect"   : "Allow",
+			   "Action"   : "*",
+			   "Resource" : { "Fn::Join" : ["", ["arn:aws:s3:::", { "Ref" : "SourceBucketName" }]]}
+		  }]}}
+        ]
+      }
+    },
+
+    "CfnKeys" : {
+      "Type" : "AWS::IAM::AccessKey",
+      "Properties" : {
+        "UserName" : {"Ref": "CfnUser"}
+      }
+    },
+
+    "BucketPolicyConfigRO" : {
+      "Type" : "AWS::S3::BucketPolicy",
+      "Properties" : {
+        "PolicyDocument": {
+          "Version"      : "2008-10-17",
+          "Id"           : "MyRPolicy",
+          "Statement"    : [{
+            "Sid"        : "ReadAccess",
+            "Action"     : ["s3:GetObject"],
+            "Effect"     : "Allow",
+            "Resource"   : { "Fn::Join" : ["", ["arn:aws:s3:::", { "Ref" : "ConfigBucketName" }, "/*"]]},
+            "Principal"  : { "AWS": {"Fn::GetAtt" : ["CfnUser", "Arn"]} }
+          }]
+        },
+        "Bucket" : { "Ref" : "ConfigBucketName" }
+      }
+    },
+    "BucketPolicyConfigRW" : {
+      "Type" : "AWS::S3::BucketPolicy",
+      "Properties" : {
+        "PolicyDocument": {
+          "Version"      : "2008-10-17",
+          "Id"           : "MyRWPolicy",
+          "Statement"    : [{
+            "Sid"        : "FullAccess",
+            "Action"     : "*",
+            "Effect"     : "Allow",
+            "Resource"   : { "Fn::Join" : ["", ["arn:aws:s3:::", { "Ref" : "ConfigBucketName" }]]},
+            "Principal"  : { "AWS": { "Ref" : "DeployIAMUser" } }
+          }]
+        },
+        "Bucket" : { "Ref" : "ConfigBucketName" }
+      }
+    },
+    "BucketPolicyConfigContentsRW" : {
+      "Type" : "AWS::S3::BucketPolicy",
+      "Properties" : {
+        "PolicyDocument": {
+          "Version"      : "2008-10-17",
+          "Id"           : "ContentsRWPolicy",
+          "Statement"    : [{
+            "Sid"        : "FullAccess",
+            "Action"     : "*",
+            "Effect"     : "Allow",
+            "Resource"   : { "Fn::Join" : ["", ["arn:aws:s3:::", { "Ref" : "ConfigBucketName" }, "/*"]]},
+            "Principal"  : { "AWS": { "Ref" : "DeployIAMUser" } }
+          }]
+        },
+        "Bucket" : { "Ref" : "ConfigBucketName" }
+      }
+    },    
+
+    "BucketPolicySourceRO" : {
+      "Type" : "AWS::S3::BucketPolicy",
+      "Properties" : {
+        "PolicyDocument": {
+          "Version"      : "2008-10-17",
+          "Id"           : "MyPolicy",
+          "Statement"    : [{
+            "Sid"        : "ReadAccess",
+            "Action"     : ["s3:GetObject"],
+            "Effect"     : "Allow",
+            "Resource"   : { "Fn::Join" : ["", ["arn:aws:s3:::", { "Ref" : "SourceBucketName" }, "/*"]]},
+            "Principal"  : { "AWS": {"Fn::GetAtt" : ["CfnUser", "Arn"]} }
+          }]
+        },
+        "Bucket" : { "Ref" : "SourceBucketName" }
+      }
+    },
+    "BucketPolicySourceRW" : {
+      "Type" : "AWS::S3::BucketPolicy",
+      "Properties" : {
+        "PolicyDocument": {
+          "Version"      : "2008-10-17",
+          "Id"           : "RWPolicy",
+          "Statement"    : [{
+            "Sid"        : "FullAccess",
+            "Action"     : "*",
+            "Effect"     : "Allow",
+            "Resource"   : { "Fn::Join" : ["", ["arn:aws:s3:::", { "Ref" : "SourceBucketName" }]]},
+            "Principal"  : { "AWS": { "Ref" : "DeployIAMUser" } }
+          }]
+        },
+        "Bucket" : { "Ref" : "SourceBucketName" }
+      }
+    },
+    "BucketPolicySourceContentsRW" : {
+      "Type" : "AWS::S3::BucketPolicy",
+      "Properties" : {
+        "PolicyDocument": {
+          "Version"      : "2008-10-17",
+          "Id"           : "ContentsRWPolicy",
+          "Statement"    : [{
+            "Sid"        : "FullAccess",
+            "Action"     : "*",
+            "Effect"     : "Allow",
+            "Resource"   : { "Fn::Join" : ["", ["arn:aws:s3:::", { "Ref" : "SourceBucketName" }, "/*"]]},
+            "Principal"  : { "AWS": { "Ref" : "DeployIAMUser" } }
+          }]
+        },
+        "Bucket" : { "Ref" : "SourceBucketName" }
+      }
+    }, 
+
+	"Notify" : {
+	   "Type" : "AWS::SNS::Topic",
+	   "Properties" : {
+	   	  "DisplayName" : { "Ref" : "NotifyDisplayName" },
+		  "Subscription" : [
+			 { "Endpoint" : { "Ref" : "NotifyEmail"}, "Protocol" : "email" }
+		  ]
+	   }
+	},
+
+    "VPC" : {
+      "Type" : "AWS::EC2::VPC",
+      "Properties" : {
+        "CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "VPC", "CIDR" ]},
+        "Tags" : [
+          { "Key" : "Application", "Value" : { "Ref" : "AWS::StackId" } }
+        ]
+      }
+    },
+
+		"PubSubnetProd1" : {
+		  "Type" : "AWS::EC2::Subnet",
+		  "Properties" : {
+			"VpcId" : { "Ref" : "VPC" },
+			"AvailabilityZone" : { "Ref" : "AvailabilityZone1"},        
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "ProdPublic1", "CIDR" ]},
+			"Tags" : [
+			  { "Key" : "Application", "Value" : { "Ref" : "AWS::StackId" } },
+			  { "Key" : "Network", "Value" : "pub" },
+			  { "Key" : "Env", "Value" : "prod" }
+			]
+		  }
+		},
+
+		"PubSubnetProd2" : {
+		  "Type" : "AWS::EC2::Subnet",
+		  "Properties" : {
+			"VpcId" : { "Ref" : "VPC" },
+			"AvailabilityZone" : { "Ref" : "AvailabilityZone2"},
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "ProdPublic2", "CIDR" ]},
+			"Tags" : [
+			  { "Key" : "Application", "Value" : { "Ref" : "AWS::StackId" } },
+			  { "Key" : "Network", "Value" : "pub" },
+			  { "Key" : "Env", "Value" : "prod" }
+			]
+		  }
+		},
+
+		"AppSubnetProd1" : {
+		  "Type" : "AWS::EC2::Subnet",
+		  "Properties" : {
+			"VpcId" : { "Ref" : "VPC" },
+			"AvailabilityZone" : { "Ref" : "AvailabilityZone1"},        
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "ProdApp1", "CIDR" ]},
+			"Tags" : [
+			  { "Key" : "Application", "Value" : { "Ref" : "AWS::StackId" } },
+			  { "Key" : "Network", "Value" : "app" },
+			  { "Key" : "Env", "Value" : "prod" }
+			]
+		  }
+		},
+
+		"AppSubnetProd2" : {
+		  "Type" : "AWS::EC2::Subnet",
+		  "Properties" : {
+			"VpcId" : { "Ref" : "VPC" },
+			"AvailabilityZone" : { "Ref" : "AvailabilityZone2"},
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "ProdApp2", "CIDR" ]},
+			"Tags" : [
+			  { "Key" : "Application", "Value" : { "Ref" : "AWS::StackId" } },
+			  { "Key" : "Network", "Value" : "app" },
+			  { "Key" : "Env", "Value" : "prod" }
+			]
+		  }
+		},
+
+		"DBSubnetProd1" : {
+		  "Type" : "AWS::EC2::Subnet",
+		  "Properties" : {
+			"VpcId" : { "Ref" : "VPC" },
+			"AvailabilityZone" : { "Ref" : "AvailabilityZone1"},
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "ProdDB1", "CIDR" ]},
+			"Tags" : [
+			  { "Key" : "Application", "Value" : { "Ref" : "AWS::StackId" } },
+			  { "Key" : "Network", "Value" : "db" },
+			  { "Key" : "Env", "Value" : "prod" }
+			]
+		  }
+		},
+
+		"DBSubnetProd2" : {
+		  "Type" : "AWS::EC2::Subnet",
+		  "Properties" : {
+			"VpcId" : { "Ref" : "VPC" },
+			"AvailabilityZone" : { "Ref" : "AvailabilityZone2"},
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "ProdDB2", "CIDR" ]},
+			"Tags" : [
+			  { "Key" : "Application", "Value" : { "Ref" : "AWS::StackId" } },
+			  { "Key" : "Network", "Value" : "db" },
+			  { "Key" : "Env", "Value" : "prod" }
+			]
+		  }
+		},    
+
+		"PubSubnetStage" : {
+		  "Type" : "AWS::EC2::Subnet",
+		  "Properties" : {
+			"VpcId" : { "Ref" : "VPC" },
+			"AvailabilityZone" : { "Ref" : "AvailabilityZone2"},        
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "StagePublic", "CIDR" ]},
+			"Tags" : [
+			  { "Key" : "Application", "Value" : { "Ref" : "AWS::StackId" } },
+			  { "Key" : "Network", "Value" : "pub" },
+			  { "Key" : "Env", "Value" : "stage" }
+			]
+		  }
+		},
+
+		"AppSubnetStage" : {
+		  "Type" : "AWS::EC2::Subnet",
+		  "Properties" : {
+			"VpcId" : { "Ref" : "VPC" },
+			"AvailabilityZone" : { "Ref" : "AvailabilityZone2"},        
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "StageApp", "CIDR" ]},
+			"Tags" : [
+			  { "Key" : "Application", "Value" : { "Ref" : "AWS::StackId" } },
+			  { "Key" : "Network", "Value" : "app" },
+			  { "Key" : "Env", "Value" : "stage" }
+			]
+		  }
+		},
+
+
+		"DBSubnetStage1" : {
+		  "Type" : "AWS::EC2::Subnet",
+		  "Properties" : {
+			"VpcId" : { "Ref" : "VPC" },
+			"AvailabilityZone" : { "Ref" : "AvailabilityZone1"},
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "StageDB1", "CIDR" ]},
+			"Tags" : [
+			  { "Key" : "Application", "Value" : { "Ref" : "AWS::StackId" } },
+			  { "Key" : "Network", "Value" : "db" },
+			  { "Key" : "Env", "Value" : "stage" }
+			]
+		  }
+		},
+
+		"DBSubnetStage2" : {
+		  "Type" : "AWS::EC2::Subnet",
+		  "Properties" : {
+			"VpcId" : { "Ref" : "VPC" },
+			"AvailabilityZone" : { "Ref" : "AvailabilityZone2"},
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "StageDB2", "CIDR" ]},
+			"Tags" : [
+			  { "Key" : "Application", "Value" : { "Ref" : "AWS::StackId" } },
+			  { "Key" : "Network", "Value" : "db" },
+			  { "Key" : "Env", "Value" : "stage" }
+			]
+		  }
+		},
+
+		"DMZSubnet" : {
+		  "Type" : "AWS::EC2::Subnet",
+		  "Properties" : {
+			"VpcId" : { "Ref" : "VPC" },
+			"AvailabilityZone" : { "Ref" : "AvailabilityZone1"},
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "DMZ", "CIDR" ]},
+			"Tags" : [
+			  { "Key" : "Application", "Value" : { "Ref" : "AWS::StackId" } },
+			  { "Key" : "Network", "Value" : "dmz" },
+			  { "Key" : "Env", "Value" : "prod" }
+			]
+		  }
+		},
+
+    
+		"InternetGateway" : {
+		  "Type" : "AWS::EC2::InternetGateway",
+		  "Properties" : {
+			"Tags" : [
+			  {"Key" : "Application", "Value" : { "Ref" : "AWS::StackName"} },
+			  {"Key" : "Network", "Value" : "Public" }
+			]
+		  }
+		},
+
+		"AttachGateway" : {
+		   "Type" : "AWS::EC2::VPCGatewayAttachment",
+		   "Properties" : {
+			 "VpcId" : { "Ref" : "VPC" },
+			 "InternetGatewayId" : { "Ref" : "InternetGateway" }
+		   }
+		},
+
+		"PublicRouteTable" : {
+		  "Type" : "AWS::EC2::RouteTable",
+		  "Properties" : {
+			"VpcId" : {"Ref" : "VPC"},
+			"Tags" : [
+			  {"Key" : "Application", "Value" : { "Ref" : "AWS::StackName"} },
+			  {"Key" : "Network", "Value" : "pub" }
+			]
+		  }
+		},
+
+		"PublicRoute" : {
+		  "Type" : "AWS::EC2::Route",
+		  "Properties" : {
+			"RouteTableId" : { "Ref" : "PublicRouteTable" },
+			"DestinationCidrBlock" : "0.0.0.0/0",
+			"GatewayId" : { "Ref" : "InternetGateway" }
+		  }
+		},
+
+		"PublicSubnetRouteTableAssociationProd1" : {
+		  "Type" : "AWS::EC2::SubnetRouteTableAssociation",
+		  "Properties" : {
+			"SubnetId" : { "Ref" : "PubSubnetProd1" },
+			"RouteTableId" : { "Ref" : "PublicRouteTable" }
+		  }
+		},
+
+		"PublicSubnetRouteTableAssociationProd2" : {
+		  "Type" : "AWS::EC2::SubnetRouteTableAssociation",
+		  "Properties" : {
+			"SubnetId" : { "Ref" : "PubSubnetProd2" },
+			"RouteTableId" : { "Ref" : "PublicRouteTable" }
+		  }
+		},
+
+		"PublicSubnetRouteTableAssociationStage" : {
+		  "Type" : "AWS::EC2::SubnetRouteTableAssociation",
+		  "Properties" : {
+			"SubnetId" : { "Ref" : "PubSubnetStage" },
+			"RouteTableId" : { "Ref" : "PublicRouteTable" }
+		  }
+		},
+
+		"PublicSubnetRouteTableAssociationDMZ" : {
+		  "Type" : "AWS::EC2::SubnetRouteTableAssociation",
+		  "Properties" : {
+			"SubnetId" : { "Ref" : "DMZSubnet" },
+			"RouteTableId" : { "Ref" : "PublicRouteTable" }
+		  }
+		},
+
+		"NATRouteTable" : {
+		  "Type" : "AWS::EC2::RouteTable",
+		  "Properties" : {
+			"VpcId" : {"Ref" : "VPC"},
+			"Tags" : [
+			  {"Key" : "Application", "Value" : { "Ref" : "AWS::StackName"} },
+			  {"Key" : "Network", "Value" : "Private" }
+			]
+		  }
+		},
+
+		"NATRoute" : {
+		  "Type" : "AWS::EC2::Route",
+		  "Properties" : {
+			"RouteTableId" : { "Ref" : "NATRouteTable" },
+			"DestinationCidrBlock" : "0.0.0.0/0",
+			"NetworkInterfaceId" : { "Ref" : "NATENI" }
+		  }
+		},
+    
+		"NATRouteTableAssociationAppProd1" : {
+		  "Type" : "AWS::EC2::SubnetRouteTableAssociation",
+		  "Properties" : {
+			"SubnetId" : { "Ref" : "AppSubnetProd1" },
+			"RouteTableId" : { "Ref" : "NATRouteTable" }
+		  }
+		},
+
+		"NATRouteTableAssociationAppProd2" : {
+		  "Type" : "AWS::EC2::SubnetRouteTableAssociation",
+		  "Properties" : {
+			"SubnetId" : { "Ref" : "AppSubnetProd2" },
+			"RouteTableId" : { "Ref" : "NATRouteTable" }
+		  }
+		},    
+
+		"NATRouteTableAssociationDBProd1" : {
+		  "Type" : "AWS::EC2::SubnetRouteTableAssociation",
+		  "Properties" : {
+			"SubnetId" : { "Ref" : "DBSubnetProd1" },
+			"RouteTableId" : { "Ref" : "NATRouteTable" }
+		  }
+		},
+
+		"NATRouteTableAssociationDBProd2" : {
+		  "Type" : "AWS::EC2::SubnetRouteTableAssociation",
+		  "Properties" : {
+			"SubnetId" : { "Ref" : "DBSubnetProd2" },
+			"RouteTableId" : { "Ref" : "NATRouteTable" }
+		  }
+		},    
+
+		"NATRouteTableAssociationAppStage" : {
+		  "Type" : "AWS::EC2::SubnetRouteTableAssociation",
+		  "Properties" : {
+			"SubnetId" : { "Ref" : "AppSubnetStage" },
+			"RouteTableId" : { "Ref" : "NATRouteTable" }
+		  }
+		},
+
+		"NATRouteTableAssociationDBStage1" : {
+		  "Type" : "AWS::EC2::SubnetRouteTableAssociation",
+		  "Properties" : {
+			"SubnetId" : { "Ref" : "DBSubnetStage1" },
+			"RouteTableId" : { "Ref" : "NATRouteTable" }
+		  }
+		},    
+
+		"NATRouteTableAssociationDBStage2" : {
+		  "Type" : "AWS::EC2::SubnetRouteTableAssociation",
+		  "Properties" : {
+			"SubnetId" : { "Ref" : "DBSubnetStage2" },
+			"RouteTableId" : { "Ref" : "NATRouteTable" }
+		  }
+		},  
+
+
+		"NetworkAclAppProd" : {
+		  "Type" : "AWS::EC2::NetworkAcl",
+		  "Properties" : {
+			"VpcId" : { "Ref" : "VPC" },
+			"Tags" : [
+			  { "Key" : "Application", "Value" : { "Ref" : "AWS::StackId" } }
+			]
+		  }
+		},
+		"NetworkAclAssocAppProd1" : {
+		  "Type" : "AWS::EC2::SubnetNetworkAclAssociation",
+		  "Properties" : {
+			"SubnetId" : { "Ref" : "AppSubnetProd1" },
+			"NetworkAclId" : { "Ref" : "NetworkAclAppProd" }
+		  }
+		},
+		"NetworkAclAssocAppProd2" : {
+		  "Type" : "AWS::EC2::SubnetNetworkAclAssociation",
+		  "Properties" : {
+			"SubnetId" : { "Ref" : "AppSubnetProd2" },
+			"NetworkAclId" : { "Ref" : "NetworkAclAppProd" }
+		  }
+		},		
+		"AclEntryDenyAllToStageDB1" : {
+		  "Type" : "AWS::EC2::NetworkAclEntry",
+		  "Properties" : {
+			"NetworkAclId" : { "Ref" : "NetworkAclAppProd" },
+			"RuleNumber" : "100",
+			"Protocol" : "-1",
+			"RuleAction" : "deny",
+			"Egress" : "true",
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "StageDB1", "CIDR" ]}
+		  }
+		},
+		"AclEntryDenyAllToStageDB2" : {
+		  "Type" : "AWS::EC2::NetworkAclEntry",
+		  "Properties" : {
+			"NetworkAclId" : { "Ref" : "NetworkAclAppProd" },
+			"RuleNumber" : "110",
+			"Protocol" : "-1",
+			"RuleAction" : "deny",
+			"Egress" : "true",
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "StageDB2", "CIDR" ]}
+		  }
+		},
+		"AclEntryDenyAllToStageApp" : {
+		  "Type" : "AWS::EC2::NetworkAclEntry",
+		  "Properties" : {
+			"NetworkAclId" : { "Ref" : "NetworkAclAppProd" },
+			"RuleNumber" : "120",
+			"Protocol" : "-1",
+			"RuleAction" : "deny",
+			"Egress" : "true",
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "StageApp", "CIDR" ]}
+		  }
+		},
+		"AclEntryDenyAllToStagePub" : {
+		  "Type" : "AWS::EC2::NetworkAclEntry",
+		  "Properties" : {
+			"NetworkAclId" : { "Ref" : "NetworkAclAppProd" },
+			"RuleNumber" : "130",
+			"Protocol" : "-1",
+			"RuleAction" : "deny",
+			"Egress" : "true",
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "StagePublic", "CIDR" ]}
+		  }
+		},
+		"AclEntryAllowDefaultOutProd" : {
+		  "Type" : "AWS::EC2::NetworkAclEntry",
+		  "Properties" : {
+			"NetworkAclId" : { "Ref" : "NetworkAclAppProd" },
+			"RuleNumber" : "900",
+			"Protocol" : "-1",
+			"RuleAction" : "allow",
+			"Egress" : "true",
+			"CidrBlock" : "0.0.0.0/0"
+		  }
+		},
+		"AclEntryAllowDefaultInProd" : {
+		  "Type" : "AWS::EC2::NetworkAclEntry",
+		  "Properties" : {
+			"NetworkAclId" : { "Ref" : "NetworkAclAppProd" },
+			"RuleNumber" : "1000",
+			"Protocol" : "-1",
+			"RuleAction" : "allow",
+			"Egress" : "false",
+			"CidrBlock" : "0.0.0.0/0"
+		  }
+		},		
+		
+		"NetworkAclAppStage" : {
+		  "Type" : "AWS::EC2::NetworkAcl",
+		  "Properties" : {
+			"VpcId" : { "Ref" : "VPC" },
+			"Tags" : [
+			  { "Key" : "Application", "Value" : { "Ref" : "AWS::StackId" } }
+			]
+		  }
+		},
+		"NetworkAclAssocAppStage" : {
+		  "Type" : "AWS::EC2::SubnetNetworkAclAssociation",
+		  "Properties" : {
+			"SubnetId" : { "Ref" : "AppSubnetStage" },
+			"NetworkAclId" : { "Ref" : "NetworkAclAppStage" }
+		  }
+		},		
+		"AclEntryDenyAllToProdDB1" : {
+		  "Type" : "AWS::EC2::NetworkAclEntry",
+		  "Properties" : {
+			"NetworkAclId" : { "Ref" : "NetworkAclAppStage" },
+			"RuleNumber" : "100",
+			"Protocol" : "-1",
+			"RuleAction" : "deny",
+			"Egress" : "true",
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "ProdDB1", "CIDR" ]}
+		  }
+		},
+		"AclEntryDenyAllToProdDB2" : {
+		  "Type" : "AWS::EC2::NetworkAclEntry",
+		  "Properties" : {
+			"NetworkAclId" : { "Ref" : "NetworkAclAppStage" },
+			"RuleNumber" : "110",
+			"Protocol" : "-1",
+			"RuleAction" : "deny",
+			"Egress" : "true",
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "ProdDB2", "CIDR" ]}
+		  }
+		},
+		"AclEntryDenyAllToProdApp1" : {
+		  "Type" : "AWS::EC2::NetworkAclEntry",
+		  "Properties" : {
+			"NetworkAclId" : { "Ref" : "NetworkAclAppStage" },
+			"RuleNumber" : "120",
+			"Protocol" : "-1",
+			"RuleAction" : "deny",
+			"Egress" : "true",
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "ProdApp1", "CIDR" ]}
+		  }
+		},
+		"AclEntryDenyAllToProdApp2" : {
+		  "Type" : "AWS::EC2::NetworkAclEntry",
+		  "Properties" : {
+			"NetworkAclId" : { "Ref" : "NetworkAclAppStage" },
+			"RuleNumber" : "130",
+			"Protocol" : "-1",
+			"RuleAction" : "deny",
+			"Egress" : "true",
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "ProdApp2", "CIDR" ]}
+		  }
+		},
+		"AclEntryDenyAllToProdPub1" : {
+		  "Type" : "AWS::EC2::NetworkAclEntry",
+		  "Properties" : {
+			"NetworkAclId" : { "Ref" : "NetworkAclAppStage" },
+			"RuleNumber" : "140",
+			"Protocol" : "-1",
+			"RuleAction" : "deny",
+			"Egress" : "true",
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "ProdPublic1", "CIDR" ]}
+		  }
+		},
+		"AclEntryDenyAllToProdPub2" : {
+		  "Type" : "AWS::EC2::NetworkAclEntry",
+		  "Properties" : {
+			"NetworkAclId" : { "Ref" : "NetworkAclAppStage" },
+			"RuleNumber" : "150",
+			"Protocol" : "-1",
+			"RuleAction" : "deny",
+			"Egress" : "true",
+			"CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "ProdPublic2", "CIDR" ]}
+		  }
+		},
+		"AclEntryAllowDefaultOutStage" : {
+		  "Type" : "AWS::EC2::NetworkAclEntry",
+		  "Properties" : {
+			"NetworkAclId" : { "Ref" : "NetworkAclAppStage" },
+			"RuleNumber" : "900",
+			"Protocol" : "-1",
+			"RuleAction" : "allow",
+			"Egress" : "true",
+			"CidrBlock" : "0.0.0.0/0"
+		  }
+		},
+		"AclEntryAllowDefaultInStage" : {
+		  "Type" : "AWS::EC2::NetworkAclEntry",
+		  "Properties" : {
+			"NetworkAclId" : { "Ref" : "NetworkAclAppStage" },
+			"RuleNumber" : "1000",
+			"Protocol" : "-1",
+			"RuleAction" : "allow",
+			"Egress" : "false",
+			"CidrBlock" : "0.0.0.0/0"
+		  }
+		},
+
+    "ELBProd" : {
+      "Type" : "AWS::ElasticLoadBalancing::LoadBalancer",
+      "Properties" : {
+        "SecurityGroups" : [ { "Ref" : "ELBSecGrpProd" } ],
+        "Subnets" : [ { "Ref" : "PubSubnetProd1" }, { "Ref" : "PubSubnetProd2" } ],
+        "LBCookieStickinessPolicy" : [{
+          "PolicyName" : "ELBPolicyProd",
+          "CookieExpirationPeriod" : { "Ref" : "StickySessionLength" }
+        } ],
+        "Listeners" : [ { "LoadBalancerPort" : "80", "InstancePort" : "80", "Protocol" : "HTTP", "PolicyNames" : [ "ELBPolicyProd" ] } ],
+        "HealthCheck" : {
+          "Target" : "HTTP:80/health-check.php",
+          "HealthyThreshold" : "4",
+          "UnhealthyThreshold" : "2",
+          "Interval" : "30",
+          "Timeout" : "15"
+        }
+      }
+    },
+		"ELBSecGrpProd" : {
+		  "Type" : "AWS::EC2::SecurityGroup",
+		  "Properties" : {
+			"GroupDescription" : "Enable HTTP access on port 80",
+			"VpcId" : { "Ref" : "VPC" },
+			"SecurityGroupIngress" : [ { "IpProtocol" : "tcp", "FromPort" : "80", "ToPort" : "80", "CidrIp" : "0.0.0.0/0" } ],
+			"SecurityGroupEgress" : [ { "IpProtocol" : "tcp", "FromPort" : "80", "ToPort" : "80", "CidrIp" : "0.0.0.0/0" } ]
+		  }
+		},
+
+		"ELBLatencyAlarmProd": {
+		  "Type": "AWS::CloudWatch::Alarm",
+		  "Properties": {
+			"AlarmDescription": "Alarm if ELB latency exceeds threshold",
+			"Namespace": "AWS/ELB",
+			"MetricName": "Latency",
+			"Dimensions": [{"Name": "LoadBalancerName","Value" : { "Ref": "ELBProd" }}],
+			"Statistic": "Average",
+			"Period": "300",
+			"EvaluationPeriods": "3",
+			"Threshold": { "Ref" : "ELBLatencyThreshold" },
+			"ComparisonOperator": "GreaterThanThreshold",
+			"AlarmActions": [{"Ref": "Notify" }],
+			"OKActions": [{"Ref": "Notify" }]
+		  }
+		},
+
+		"ELBNoInstancesAlarmProd": {
+		  "Type": "AWS::CloudWatch::Alarm",
+		  "Properties": {
+			"AlarmDescription": "Alarm if ELB doesn't have any healthy instances",
+			"Namespace": "AWS/ELB",
+			"MetricName": "HealthyHostCount",
+			"Dimensions": [{"Name": "LoadBalancerName", "Value" : { "Ref": "ELBProd" }}],
+			"Statistic": "Minimum",
+			"Period": "60",
+			"EvaluationPeriods": "10",
+			"Threshold": "1",
+			"ComparisonOperator": "LessThanThreshold",
+			"AlarmActions": [{"Ref": "Notify"}],
+			"OKActions": [{"Ref": "Notify"}]
+		  }
+		},
+
+
+    "ELBStage" : {
+      "Type" : "AWS::ElasticLoadBalancing::LoadBalancer",
+      "Properties" : {
+        "SecurityGroups" : [ { "Ref" : "ELBSecGrpStage" } ],
+        "Subnets" : [{ "Ref" : "PubSubnetStage" }],
+        "LBCookieStickinessPolicy" : [{
+          "PolicyName" : "ELBPolicyStage",
+          "CookieExpirationPeriod" : { "Ref" : "StickySessionLength" }
+        } ],        
+        "Listeners" : [ { "LoadBalancerPort" : "80", "InstancePort" : "80", "Protocol" : "HTTP", "PolicyNames" : [ "ELBPolicyStage" ] } ],
+        "HealthCheck" : {
+          "Target" : "HTTP:80/health-check.php",
+          "HealthyThreshold" : "2",
+          "UnhealthyThreshold" : "10",
+          "Interval" : "300",
+          "Timeout" : "30"
+        }
+      }
+    },
+		"ELBSecGrpStage" : {
+		  "Type" : "AWS::EC2::SecurityGroup",
+		  "Properties" : {
+			"GroupDescription" : "Enable HTTP access on port 80",
+			"VpcId" : { "Ref" : "VPC" },
+			"SecurityGroupIngress" : [ { "IpProtocol" : "tcp", "FromPort" : "80", "ToPort" : "80", "CidrIp" : "0.0.0.0/0" } ],
+			"SecurityGroupEgress" : [ { "IpProtocol" : "tcp", "FromPort" : "80", "ToPort" : "80", "CidrIp" : "0.0.0.0/0" } ]
+		  }
+		},
+
+
+    "AppASGProd" : {
+      "Type" : "AWS::AutoScaling::AutoScalingGroup",
+	   "UpdatePolicy" : {
+		  "AutoScalingRollingUpdate" : {
+			 "MinInstancesInService" : "1",
+			 "MaxBatchSize" : "1",
+			 "PauseTime" : "PT15M0S"
+		  }
+	   },     
+      "Metadata" : {
+        "AWS::CloudFormation::Init" : {
+ 		  "configSets" : {
+		  	  "provision" : [ "step1", "step2" ]
+		  },        
+          "step2" : {
+			"commands" : {          
+				"dSetRDSEndpoint" : {
+					"command" : { "Fn::Join" : ["", [
+						"/bin/sed -i 's/DATABASE_HOSTNAME/",
+						{ "Fn::GetAtt" : [ "RDSInstanceProd", "Endpoint.Address" ] },
+						"/g' wp-config.php" ]] },
+					"cwd" : "/var/www/html",
+					"ignoreErrors" : "false"						
+				},
+				"eSetSiteURL" : {
+					"command" : { "Fn::Join" : ["", [
+						"/bin/sed -i 's^SITE_URL^",
+						{ "Ref" : "SiteURLProd" },
+						"^g' wp-config.php" ]] },
+					"cwd" : "/var/www/html",
+					"ignoreErrors" : "false"						
+				},
+				"fSetDBName" : {
+					"command" : { "Fn::Join" : ["", [
+						"/bin/sed -i 's/DATABASE_NAME/",
+						{ "Ref" : "DBName" },
+						"/g' wp-config.php" ]] },
+					"cwd" : "/var/www/html",
+					"ignoreErrors" : "false"
+				},
+				"gSetDBUserName" : {
+					"command" : { "Fn::Join" : ["", [
+						"/bin/sed -i 's/DATABASE_USERNAME/",
+						{ "Ref" : "DBUser" },
+						"/g' wp-config.php" ]] },
+					"cwd" : "/var/www/html",
+					"ignoreErrors" : "false"						
+				},
+				"hSetDBPwd" : {
+					"command" : { "Fn::Join" : ["", [
+						"/bin/sed -i 's/DATABASE_PWD/",
+						{ "Ref" : "DBPassword" },
+						"/g' wp-config.php" ]] },
+					"cwd" : "/var/www/html",
+					"ignoreErrors" : "false"						
+				},
+				"jReloadNginx" : {
+					"command" : "/etc/init.d/nginx reload"
+				},
+				"kAdjustUploadsDir" : {
+					"command" : "chown -R nginx.nginx /var/www/html/wp-content/uploads"
+				}
+			}	
+          },
+          "step1" : {
+            "packages" : {
+              "yum" : {
+                "nginx"				: [],
+                "php-common"   		: [],
+                "php-mysql"			: [],
+                "php-fpm" 			: [],
+                "php-pecl-apc"	 	: [],
+                "php-pecl-memcache"	: [],
+                "php-gd"			: [],
+                "subversion"		: [],
+                "varnish"			: []
+              }
+            },
+            "sources" : {
+              "/var/www/html" : { "Fn::Join" : [ "", ["http://", { "Ref" : "SourceBucketName" }, 
+					  ".s3.amazonaws.com/production.tar.bz2" ] ] }
+            },
+            "files" : {
+              "/etc/nginx/nginx.conf" : {
+				"source" : { "Fn::Join" : [ "", ["http://", { "Ref" : "ConfigBucketName" }, 
+					  ".s3.amazonaws.com/nginx.conf" ] ] },
+    			"mode"  : "000644",
+			    "owner" : "root",
+    			"group" : "root",
+    			"authentication" : "S3AccessCreds"
+              },
+              "/etc/nginx/conf.d/example-nginx.conf" : {
+				"source" : { "Fn::Join" : [ "", ["http://", { "Ref" : "ConfigBucketName" }, 
+					  ".s3.amazonaws.com/example-nginx.conf" ] ] },
+    			"mode"  : "000644",
+			    "owner" : "root",
+    			"group" : "root",
+    			"authentication" : "S3AccessCreds"
+              },              
+              "/etc/php.ini" : {
+				"source" : { "Fn::Join" : [ "", ["http://", { "Ref" : "ConfigBucketName" }, 
+					  ".s3.amazonaws.com/php.ini" ] ] },
+    			"mode"  : "000644",
+			    "owner" : "root",
+    			"group" : "root",
+    			"authentication" : "S3AccessCreds"
+              },
+              "/etc/php.d/example-custom-php.ini" : {
+				"source" : { "Fn::Join" : [ "", ["http://", { "Ref" : "ConfigBucketName" }, 
+						".s3.amazonaws.com/example-custom-php.ini" ] ] },
+    			"mode"  : "000644",
+			    "owner" : "root",
+    			"group" : "root",
+    			"authentication" : "S3AccessCreds"
+              },              
+              "/etc/php-fpm.d/www.conf" : {
+				"source" : { "Fn::Join" : [ "", ["http://", { "Ref" : "ConfigBucketName" }, 
+					  ".s3.amazonaws.com/www.conf" ] ] },
+    			"mode"  : "000644",
+			    "owner" : "root",
+    			"group" : "root",
+    			"authentication" : "S3AccessCreds"
+              },
+              "/etc/varnish/example.vcl" : {
+				"source" : { "Fn::Join" : [ "", ["http://", { "Ref" : "ConfigBucketName" }, 
+					  	".s3.amazonaws.com/example.vcl" ] ] },
+    			"mode"  : "000644",
+			    "owner" : "root",
+    			"group" : "root",
+    			"authentication" : "S3AccessCreds"
+              },
+              "/etc/sysconfig/varnish" : {
+				"source" : { "Fn::Join" : [ "", ["http://", { "Ref" : "ConfigBucketName" }, 
+					  	".s3.amazonaws.com/varnish" ] ] },
+    			"mode"  : "000644",
+			    "owner" : "root",
+    			"group" : "root",
+    			"authentication" : "S3AccessCreds"
+              }    
+            },
+            "services" : {
+              "sysvinit" : {  
+                "nginx" : {
+                  "enabled" : "true",
+                  "ensureRunning" : "true",
+                  "files" : ["/etc/nginx/nginx.conf", "/etc/nginx/conf.d/example-nginx.conf"]
+                },
+                "php-fpm" : {
+                  "enabled" : "true",
+                  "ensureRunning" : "true",
+                  "files" : ["/etc/php.ini", "/etc/php-fpm.d/www.conf", "/etc/php.d/example-custom-php.ini"],
+                  "sources" : ["/var/www/html"]                  
+                },
+                "varnish" : {
+                  "enabled" : "true",
+                  "ensureRunning" : "true",
+                  "files" : ["/etc/sysconfig/varnish", "/etc/varnish/default.vcl"],
+                  "sources" : ["/var/www/html"]
+                },
+                "sendmail" : {
+                  "enabled" : "false",
+                  "ensureRunning" : "false"
+                }
+              }
+            }
+          }
+        },
+
+        "AWS::CloudFormation::Authentication" : {
+          "S3AccessCreds" : {
+            "type" : "S3",
+            "accessKeyId" : { "Ref" : "CfnKeys" },
+            "secretKey" : {"Fn::GetAtt": ["CfnKeys", "SecretAccessKey"]},
+            "buckets" : [ { "Ref" : "ConfigBucketName" }, { "Ref" : "SourceBucketName" } ]
+          }
+        }
+
+      },
+      "Properties" : {
+        "AvailabilityZones" : [{ "Fn::GetAtt" : [ "AppSubnetProd1", "AvailabilityZone" ] }, { "Fn::GetAtt" : [ "AppSubnetProd2", "AvailabilityZone" ] }],
+        "VPCZoneIdentifier" : [{ "Ref" : "AppSubnetProd1" }, { "Ref" : "AppSubnetProd2" }],
+        "LaunchConfigurationName" : { "Ref" : "AppLaunchConfigProd" },
+        "HealthCheckType" : "ELB",
+        "HealthCheckGracePeriod" : "360", 
+        "MaxSize" : { "Ref": "MaxAppCountProd" },
+        "MinSize" : { "Ref": "MinAppCountProd" },
+        "LoadBalancerNames" : [ { "Ref" : "ELBProd" } ],
+		"NotificationConfiguration" : {
+		  "TopicARN" : { "Ref" : "Notify" },
+		  "NotificationTypes" : [ "autoscaling:EC2_INSTANCE_LAUNCH","autoscaling:EC2_INSTANCE_LAUNCH_ERROR","autoscaling:EC2_INSTANCE_TERMINATE", "autoscaling:EC2_INSTANCE_TERMINATE_ERROR"]
+		},
+        "Tags" : [	{"Key" : "Name", "Value" : "ASG-App-Prod", "PropagateAtLaunch" : "true" },
+        			{"Key" : "role", "Value" : "app", "PropagateAtLaunch" : "true"},
+        			{"Key" : "env", "Value" : "prod", "PropagateAtLaunch" : "true"}]
+      },
+	  "DependsOn" : ["NATInstance", "RDSInstanceProd"]
+    },
+
+		"AppLaunchConfigProd" : {
+		  "Type" : "AWS::AutoScaling::LaunchConfiguration",
+		  "Properties" : {
+			"ImageId" : { "Fn::FindInMap" : [ "AWSRegionArch2AMI", { "Ref" : "AWS::Region" },
+											  { "Fn::FindInMap" : [ "AWSInstanceType2Arch", { "Ref" : "AppInstanceType" },
+											  "Arch" ] } ] },
+			"KeyName": { "Ref" : "AppProdKey" },
+			"IamInstanceProfile": { "Ref" : "AppRoleProfileProd" },
+			"SecurityGroups" : [ { "Ref" : "AppSecGrpProd" } ],
+			"InstanceType" : { "Ref" : "AppInstanceType" },
+			"UserData"       : { "Fn::Base64" : { "Fn::Join" : ["", [
+			  "#!/bin/bash\n",
+			  "yum update -y aws-cfn-bootstrap\n",
+			  "/opt/aws/bin/cfn-init -s ", { "Ref" : "AWS::StackId" }, " -r AppASGProd -c provision",
+			  "         --region ", { "Ref" : "AWS::Region" }, "\n",
+			  "yum update --security -y\n",
+			  "/opt/aws/bin/cfn-signal -e $? '", { "Ref" : "WaitHandleAppProd" }, "'\n"
+			]]}} 
+		  }
+		},
+
+		"WaitHandleAppProd" : {
+		  "Type" : "AWS::CloudFormation::WaitConditionHandle"
+		},
+
+		"WaitConditionAppProd" : {
+		  "Type" : "AWS::CloudFormation::WaitCondition",
+		  "DependsOn" : "AppASGProd",
+		  "Properties" : {
+			"Handle" : {"Ref" : "WaitHandleAppProd"},
+			"Timeout" : "360"
+		  }
+		},
+
+		"AppSecGrpProd" : {
+		  "Type" : "AWS::EC2::SecurityGroup",
+		  "Properties" : {
+			"GroupDescription" : "Only allow HTTP access from ELB and SSH and HTTP from bastion host",
+			"VpcId" : { "Ref" : "VPC" },
+			"SecurityGroupIngress" : [ 
+				{ "IpProtocol" : "tcp", "FromPort" : "80", "ToPort" : "80", "SourceSecurityGroupId" : { "Ref" : "ELBSecGrpProd" } },
+				{ "IpProtocol" : "tcp", "FromPort" : "80", "ToPort" : "80", "SourceSecurityGroupId" : { "Ref" : "BastionSecGrp" } },
+				{ "IpProtocol" : "tcp", "FromPort" : "22", "ToPort" : "22", "SourceSecurityGroupId" : { "Ref" : "BastionSecGrp" } }
+				]
+		  }
+		},
+
+
+		"AppScaleUpPolicy" : {
+		  "Type" : "AWS::AutoScaling::ScalingPolicy",
+		  "Properties" : {
+			"AdjustmentType" : "ChangeInCapacity",
+			"AutoScalingGroupName" : { "Ref" : "AppASGProd" },
+			"Cooldown" : "600",
+			"ScalingAdjustment" : "2"
+		  }
+		},
+		"AppScaleDownPolicy" : {
+		  "Type" : "AWS::AutoScaling::ScalingPolicy",
+		  "Properties" : {
+			"AdjustmentType" : "ChangeInCapacity",
+			"AutoScalingGroupName" : { "Ref" : "AppASGProd" },
+			"Cooldown" : "600",
+			"ScalingAdjustment" : "-2"
+		  }
+		},
+		"AppCPUAlarmHigh": {
+		 "Type": "AWS::CloudWatch::Alarm",
+		 "Properties": {
+			"AlarmDescription": "Scale-up if CPU > 85% for 10 minutes",
+			"MetricName": "CPUUtilization",
+			"Namespace": "AWS/EC2",
+			"Statistic": "Average",
+			"Period": "300",
+			"EvaluationPeriods": "2",
+			"Threshold": "85",
+			"AlarmActions": [ { "Ref": "AppScaleUpPolicy" }, { "Ref": "Notify" } ],
+			"OKActions": [{"Ref": "Notify"}],
+			"Dimensions": [
+			  {
+				"Name": "AutoScalingGroupName",
+				"Value": { "Ref": "AppASGProd" }
+			  }
+			],
+			"ComparisonOperator": "GreaterThanThreshold"
+		  }
+		},
+		"AppCPUAlarmLow": {
+		 "Type": "AWS::CloudWatch::Alarm",
+		 "Properties": {
+			"AlarmDescription": "Scale-down if CPU < 60% for 30 minutes",
+			"MetricName": "CPUUtilization",
+			"Namespace": "AWS/EC2",
+			"Statistic": "Average",
+			"Period": "300",
+			"EvaluationPeriods": "6",
+			"Threshold": "60",
+			"AlarmActions": [ { "Ref": "AppScaleDownPolicy" }, { "Ref": "Notify" } ],
+			"OKActions": [{"Ref": "Notify"}],
+			"Dimensions": [
+			  {
+				"Name": "AutoScalingGroupName",
+				"Value": { "Ref": "AppASGProd" }
+			  }
+			],
+			"ComparisonOperator": "LessThanThreshold"
+		  }
+		},
+
+
+    "AppASGStage" : {
+      "Type" : "AWS::AutoScaling::AutoScalingGroup",
+      "Metadata" : {
+        "AWS::CloudFormation::Init" : {
+ 		  "configSets" : {
+		  	  "provision" : [ "step1" , "step2" ]
+		  },        
+          "step2" : {
+			"commands" : {
+				"dSetRDSEndpoint" : {
+					"command" : { "Fn::Join" : ["", [
+						"/bin/sed -i 's/DATABASE_HOSTNAME/",
+						{ "Fn::GetAtt" : [ "RDSInstanceStage", "Endpoint.Address" ] },
+						"/g' wp-config.php" ]] },
+					"cwd" : "/var/www/html",
+					"ignoreErrors" : "false"						
+				},
+				"eSetSiteURL" : {
+					"command" : { "Fn::Join" : ["", [
+						"/bin/sed -i 's^SITE_URL^",
+						{ "Ref" : "SiteURLStage" },
+						"^g' wp-config.php" ]] },
+					"cwd" : "/var/www/html",
+					"ignoreErrors" : "false"						
+				},
+				"fSetDBName" : {
+					"command" : { "Fn::Join" : ["", [
+						"/bin/sed -i 's/DATABASE_NAME/",
+						{ "Ref" : "DBName" },
+						"/g' wp-config.php" ]] },
+					"cwd" : "/var/www/html",
+					"ignoreErrors" : "false"						
+				},
+				"gSetDBUserName" : {
+					"command" : { "Fn::Join" : ["", [
+						"/bin/sed -i 's/DATABASE_USERNAME/",
+						{ "Ref" : "DBUser" },
+						"/g' wp-config.php" ]] },
+					"cwd" : "/var/www/html",
+					"ignoreErrors" : "false"						
+				},
+				"hSetDBPwd" : {
+					"command" : { "Fn::Join" : ["", [
+						"/bin/sed -i 's/DATABASE_PWD/",
+						{ "Ref" : "DBPassword" },
+						"/g' wp-config.php" ]] },
+					"cwd" : "/var/www/html",
+					"ignoreErrors" : "false"						
+				},				
+				"jReloadNginx" : {
+					"command" : "/etc/init.d/nginx reload"
+				},
+				"kAdjustUploadsDir" : {
+					"command" : "chown -R nginx.nginx /var/www/html/wp-content/uploads"
+				}
+			}
+          },
+          "step1" : {
+            "packages" : {
+              "yum" : {
+                "nginx"				: [],
+                "php-common"   		: [],
+                "php-mysql"			: [],
+                "php-fpm" 			: [],
+                "php-pecl-apc"	 	: [],
+                "php-pecl-memcache"	: [],
+                "php-gd"			: [],
+                "subversion"		: [],
+                "varnish"			: []
+              }
+            },
+            "sources" : {
+              "/var/www/html" : { "Fn::Join" : [ "", ["http://", { "Ref" : "SourceBucketName" }, 
+					  ".s3.amazonaws.com/staging.tar.bz2" ] ] }
+            },            
+            "files" : {
+              "/etc/nginx/nginx.conf" : {
+				"source" : { "Fn::Join" : [ "", ["http://", { "Ref" : "ConfigBucketName" }, 
+					  ".s3.amazonaws.com/nginx.conf" ] ] },
+    			"mode"  : "000644",
+			    "owner" : "root",
+    			"group" : "root",
+    			"authentication" : "S3AccessCreds"
+              },
+              "/etc/nginx/conf.d/example-nginx.conf" : {
+				"source" : { "Fn::Join" : [ "", ["http://", { "Ref" : "ConfigBucketName" }, 
+					  ".s3.amazonaws.com/example-nginx.conf" ] ] },
+    			"mode"  : "000644",
+			    "owner" : "root",
+    			"group" : "root",
+    			"authentication" : "S3AccessCreds"
+              },              
+              "/etc/php.ini" : {
+				"source" : { "Fn::Join" : [ "", ["http://", { "Ref" : "ConfigBucketName" }, 
+					  ".s3.amazonaws.com/php.ini" ] ] },
+    			"mode"  : "000644",
+			    "owner" : "root",
+    			"group" : "root",
+    			"authentication" : "S3AccessCreds"
+              },
+              "/etc/php.d/example-custom-php.ini" : {
+				"source" : { "Fn::Join" : [ "", ["http://", { "Ref" : "ConfigBucketName" }, 
+						".s3.amazonaws.com/example-custom-php.ini" ] ] },
+    			"mode"  : "000644",
+			    "owner" : "root",
+    			"group" : "root",
+    			"authentication" : "S3AccessCreds"
+              },              
+              "/etc/php-fpm.d/www.conf" : {
+				"source" : { "Fn::Join" : [ "", ["http://", { "Ref" : "ConfigBucketName" }, 
+					  ".s3.amazonaws.com/www.conf" ] ] },
+    			"mode"  : "000644",
+			    "owner" : "root",
+    			"group" : "root",
+    			"authentication" : "S3AccessCreds"
+              },
+              "/etc/varnish/example.vcl" : {
+				"source" : { "Fn::Join" : [ "", ["http://", { "Ref" : "ConfigBucketName" }, 
+					  	".s3.amazonaws.com/example.vcl" ] ] },
+    			"mode"  : "000644",
+			    "owner" : "root",
+    			"group" : "root",
+    			"authentication" : "S3AccessCreds"
+              },
+              "/etc/sysconfig/varnish" : {
+				"source" : { "Fn::Join" : [ "", ["http://", { "Ref" : "ConfigBucketName" }, 
+					  	".s3.amazonaws.com/varnish" ] ] },
+    			"mode"  : "000644",
+			    "owner" : "root",
+    			"group" : "root",
+    			"authentication" : "S3AccessCreds"
+              }              
+            },
+            "services" : {
+              "sysvinit" : {  
+                "nginx" : {
+                  "enabled" : "true",
+                  "ensureRunning" : "true",
+                  "files" : ["/etc/nginx/nginx.conf", "/etc/nginx/conf.d/example-nginx.conf"]
+                },
+                "php-fpm" : {
+                  "enabled" : "true",
+                  "ensureRunning" : "true",
+                  "files" : ["/etc/php.ini", "/etc/php-fpm.d/www.conf", "/etc/php.d/example-custom-php.ini"],
+                  "sources" : ["/var/www/html"]
+                },
+                "varnish" : {
+                  "enabled" : "true",
+                  "ensureRunning" : "true",
+                  "files" : ["/etc/sysconfig/varnish", "/etc/varnish/default.vcl"],
+                  "sources" : ["/var/www/html"]
+                },                
+                "sendmail" : {
+                  "enabled" : "false",
+                  "ensureRunning" : "false"
+                }
+              }
+            }
+          }
+        },
+
+        "AWS::CloudFormation::Authentication" : {
+          "S3AccessCreds" : {
+            "type" : "S3",
+            "accessKeyId" : { "Ref" : "CfnKeys" },
+            "secretKey" : {"Fn::GetAtt": ["CfnKeys", "SecretAccessKey"]},
+            "buckets" : [ { "Ref" : "ConfigBucketName" }, { "Ref" : "SourceBucketName" } ]
+          }
+        }
+
+      },
+      "Properties" : {
+        "AvailabilityZones" : [{ "Fn::GetAtt" : [ "AppSubnetStage", "AvailabilityZone" ] }],
+        "VPCZoneIdentifier" : [{ "Ref" : "AppSubnetStage" }],
+        "LaunchConfigurationName" : { "Ref" : "AppLaunchConfigStage" },
+        "HealthCheckType" : "ELB",
+        "HealthCheckGracePeriod" : "360",
+        "MinSize" : "1",
+        "MaxSize" : "1",
+        "DesiredCapacity" : "1",
+        "LoadBalancerNames" : [ { "Ref" : "ELBStage" } ],
+		"NotificationConfiguration" : {
+		  "TopicARN" : { "Ref" : "Notify" },
+		  "NotificationTypes" : [ "autoscaling:EC2_INSTANCE_LAUNCH","autoscaling:EC2_INSTANCE_LAUNCH_ERROR","autoscaling:EC2_INSTANCE_TERMINATE", "autoscaling:EC2_INSTANCE_TERMINATE_ERROR"]
+		},
+        "Tags" : [	{"Key" : "Name", "Value" : "ASG-App-Stage", "PropagateAtLaunch" : "true" },
+        			{"Key" : "role", "Value" : "app", "PropagateAtLaunch" : "true"},
+        			{"Key" : "env", "Value" : "stage", "PropagateAtLaunch" : "true"}]
+      },
+	  "DependsOn" : ["NATInstance", "RDSInstanceStage"]
+    },
+
+		"AppLaunchConfigStage" : {
+		  "Type" : "AWS::AutoScaling::LaunchConfiguration",
+		  "Properties" : {
+			"ImageId" : { "Fn::FindInMap" : [ "AWSRegionArch2AMI", { "Ref" : "AWS::Region" },
+											  { "Fn::FindInMap" : [ "AWSInstanceType2Arch", { "Ref" : "AppInstanceType" },
+											  "Arch" ] } ] },
+			"KeyName": { "Ref" : "AppStageKey" },
+			"IamInstanceProfile": { "Ref" : "AppRoleProfileStage" },
+			"SecurityGroups" : [ { "Ref" : "AppSecGrpStage" } ],
+			"InstanceType" : { "Ref" : "AppInstanceType" },
+			"UserData"       : { "Fn::Base64" : { "Fn::Join" : ["", [
+			  "#!/bin/bash\n",
+			  "yum update -y aws-cfn-bootstrap\n",
+			  "/opt/aws/bin/cfn-init -s ", { "Ref" : "AWS::StackId" }, " -r AppASGStage -c provision",
+			  "         --region ", { "Ref" : "AWS::Region" }, "\n",
+			  "yum update --security -y\n",
+			  "/opt/aws/bin/cfn-signal -e $? '", { "Ref" : "WaitHandleAppStage" }, "'\n"
+			]]}} 
+		  }
+		},
+
+		"WaitHandleAppStage" : {
+		  "Type" : "AWS::CloudFormation::WaitConditionHandle"
+		},
+
+		"WaitConditionAppStage" : {
+		  "Type" : "AWS::CloudFormation::WaitCondition",
+		  "DependsOn" : "AppASGStage",
+		  "Properties" : {
+			"Handle" : {"Ref" : "WaitHandleAppStage"},
+			"Timeout" : "360"
+		  }
+		},
+
+		"AppSecGrpStage" : {
+		  "Type" : "AWS::EC2::SecurityGroup",
+		  "Properties" : {
+			"GroupDescription" : "Only allow HTTP access from ELB and SSH and HTTP from bastion host",
+			"VpcId" : { "Ref" : "VPC" },
+			"SecurityGroupIngress" : [ 
+				{ "IpProtocol" : "tcp", "FromPort" : "80", "ToPort" : "80", "SourceSecurityGroupId" : { "Ref" : "ELBSecGrpStage" } },
+				{ "IpProtocol" : "tcp", "FromPort" : "80", "ToPort" : "80", "SourceSecurityGroupId" : { "Ref" : "BastionSecGrp" } },				
+				{ "IpProtocol" : "tcp", "FromPort" : "22", "ToPort" : "22", "SourceSecurityGroupId" : { "Ref" : "BastionSecGrp" } }
+				]
+		  }
+		},
+
+    "BastionInstance" : {
+      "Type" : "AWS::EC2::Instance",
+      "Properties" : {
+        "ImageId" : { "Fn::FindInMap" : [ "AWSRegionArch2AMI", { "Ref" : "AWS::Region" },
+                                          { "Fn::FindInMap" : [ "AWSInstanceType2Arch", { "Ref" : "BastionInstanceType" },
+                                          "Arch" ] } ] },      
+        "AvailabilityZone" : { "Fn::GetAtt" : [ "DMZSubnet", "AvailabilityZone" ] },
+        "SourceDestCheck" : "true",
+        "KeyName": { "Ref" : "BastionKey" },
+        "DisableApiTermination": "true",
+	    "NetworkInterfaces" : [ { "NetworkInterfaceId" : {"Ref" : "BastionENI"}, "DeviceIndex" : "0" } ],
+        "InstanceType" : { "Ref" : "BastionInstanceType" },
+		"UserData"       : { "Fn::Base64" : { "Fn::Join" : ["", [
+				  "#!/bin/bash\n",
+				  "yum upgrade -y\n"
+		]]}},
+        "Tags" : [ {"Key" : "Name", "Value" : "Bastion Host"} ]
+      }
+    },
+
+		"BastionSecGrp" : {
+		  "Type" : "AWS::EC2::SecurityGroup",
+		  "Properties" : {
+			"GroupDescription" : "Allow outgoing NATed traffic from private subnets",
+			"VpcId" : { "Ref" : "VPC" },
+			"SecurityGroupIngress" : [ 
+				{ "IpProtocol" : "tcp", "FromPort" : "22", "ToPort" : "22", "CidrIp" : { "Ref" : "BastionSSHFrom" } } 
+			]
+		  }
+		},
+
+		"BastionENI" : {
+		  "Type" : "AWS::EC2::NetworkInterface",
+		  "Properties" : {
+			"SubnetId" : { "Ref" : "DMZSubnet" },
+			"Description" :"Bastion host ENI",
+			"GroupSet" : [ {"Ref" : "BastionSecGrp"} ],
+			"SourceDestCheck" : "true",
+			"Tags" : [ {"Key" : "role", "Value" : "bastion"}]
+		  }
+		},
+
+		"BastionEIP" : {
+		  "Type" : "AWS::EC2::EIP",
+		  "Properties" : {
+			"Domain" : "vpc"
+		  }
+		},
+
+		"BastionEIPAssociation" : {
+		  "Type" : "AWS::EC2::EIPAssociation",
+		  "Properties" : {
+			"AllocationId" : { "Fn::GetAtt" : [ "BastionEIP", "AllocationId" ] },
+			"NetworkInterfaceId":  { "Ref" : "BastionENI" }
+		  }
+		},
+    
+
+    "NATInstance" : {
+      "Type" : "AWS::EC2::Instance",
+      "Properties" : {
+        "ImageId" : { "Fn::FindInMap" : [ "AWSRegionNATAMI", { "Ref" : "AWS::Region" },
+                                          { "Fn::FindInMap" : [ "AWSInstanceType2Arch", { "Ref" : "NATInstanceType" },
+                                          "Arch" ] } ] },    
+		"AvailabilityZone" : { "Fn::GetAtt" : [ "DMZSubnet", "AvailabilityZone" ] },
+        "SourceDestCheck" : "false",
+        "DisableApiTermination": "true",
+	    "NetworkInterfaces" : [ { "NetworkInterfaceId" : {"Ref" : "NATENI"}, "DeviceIndex" : "0" } ],
+        "InstanceType" : { "Ref" : "NATInstanceType" },
+		"UserData"       : { "Fn::Base64" : { "Fn::Join" : ["", [
+				  "#!/bin/bash\n",
+				  "yum upgrade -y\n"
+		]]}},
+        "Tags" : [	{"Key" : "Name", "Value" : "NAT Gateway"} ]
+      }
+    },
+
+		"NATSecGrp" : {
+		  "Type" : "AWS::EC2::SecurityGroup",
+		  "Properties" : {
+			"GroupDescription" : "Allow outgoing NATed traffic from app server subnets",
+			"VpcId" : { "Ref" : "VPC" },
+			"SecurityGroupIngress" : [ 
+				{ "IpProtocol" : "tcp", "FromPort" : "1", "ToPort" : "65535", "SourceSecurityGroupId" : { "Ref" : "AppSecGrpProd" } },
+				{ "IpProtocol" : "tcp", "FromPort" : "1", "ToPort" : "65535", "SourceSecurityGroupId" : { "Ref" : "AppSecGrpStage" } },
+				{ "IpProtocol" : "tcp", "FromPort" : "22", "ToPort" : "22", "SourceSecurityGroupId" : { "Ref" : "BastionSecGrp" } }				
+			]
+		  }
+		},
+
+		"NATENI" : {
+		  "Type" : "AWS::EC2::NetworkInterface",
+		  "Properties" : {
+			"SubnetId" : { "Ref" : "DMZSubnet" },
+			"Description" :"NAT Gateway ENI",
+			"GroupSet" : [ {"Ref" : "NATSecGrp"} ],
+			"SourceDestCheck" : "false",
+			"Tags" : [ {"Key" : "role", "Value" : "nat"}]
+		  }
+		},
+
+		"NATEIP" : {
+		  "Type" : "AWS::EC2::EIP",
+		  "Properties" : {
+			"Domain" : "vpc"
+		  }
+		},
+
+		"NATEIPAssociation" : {
+		  "Type" : "AWS::EC2::EIPAssociation",
+		  "Properties" : {
+			"AllocationId" : { "Fn::GetAtt" : [ "NATEIP", "AllocationId" ] },
+			"NetworkInterfaceId":  { "Ref" : "NATENI" }
+		  }
+		},
+
+		"NATGatewayStatusAlarm": {
+		  "Type": "AWS::CloudWatch::Alarm",
+		  "Properties": {
+			"AlarmDescription": "Alarm if NAT gateway dies",
+			"Namespace": "EC2",
+			"MetricName": "StatusCheckFailed",
+			"Dimensions": [{
+			  "Name": "InstanceId",
+			  "Value" : { "Ref": "NATInstance" }
+			}],
+			"Statistic": "Maximum",
+			"Period": "300",
+			"EvaluationPeriods": "1",
+			"Threshold": "1",
+			"ComparisonOperator": "GreaterThanOrEqualToThreshold",
+			"AlarmActions": [{
+			  "Ref": "Notify"
+			}],
+			"OKActions": [{
+			  "Ref": "Notify"
+			}]
+		  }
+		},
+
+    "RDSInstanceProd" : {
+      "Type" : "AWS::RDS::DBInstance",
+      "Properties" : {
+        "AllocatedStorage" : { "Ref" : "DBAllocatedStorage" },
+        "DBInstanceClass" : { "Ref" : "DBClassProd" },
+		"MultiAZ" : "true",
+		"DBSnapshotIdentifier" : { "Ref" : "DBCreateFromSnapshot" },
+		"BackupRetentionPeriod" : { "Ref" : "DBBackupRetentionProd" },
+        "Engine" : "MySQL",
+        "EngineVersion" : "5.5",
+        "MasterUsername" : { "Ref" : "DBUser" },
+        "MasterUserPassword" : { "Ref" : "DBPassword" },
+        "DBSubnetGroupName" : { "Ref" : "RDSSubnetGrpProd" },
+        "DBSecurityGroups" : [ { "Ref" : "RDSSecGrpProd" } ],
+        "Tags" : [{
+          "Key" : "Name",
+          "Value" : "Production DB Server"
+        }]
+      },
+      "DeletionPolicy" : "Snapshot",
+      "DependsOn" : "NATInstance"
+    },
+		"RDSSubnetGrpProd" : {
+		  "Type" : "AWS::RDS::DBSubnetGroup",
+		  "Properties" : {
+			"DBSubnetGroupDescription" : "Subnets available for the production RDS DB instance(s)",
+			"SubnetIds" : [{ "Ref" : "DBSubnetProd1" }, { "Ref" : "DBSubnetProd2" }]
+		  }
+		},
+		"RDSSecGrpProd" : {
+		  "Type" : "AWS::RDS::DBSecurityGroup",
+		  "Properties" : {
+			"GroupDescription" : "Security group for production RDS DB instance(s)",
+			"EC2VpcId" : { "Ref" : "VPC" },
+			"DBSecurityGroupIngress" : [ { "EC2SecurityGroupId" : { "Ref" : "AppSecGrpProd" } },
+										 { "EC2SecurityGroupId" : { "Ref" : "BastionSecGrp" } } ]
+		  }
+		},
+
+		"RDSCPUAlarmHighProd": {
+		  "Type": "AWS::CloudWatch::Alarm",
+		  "Properties": {
+			"AlarmDescription": { "Fn::Join" : [ "", ["Alarm if ", { "Ref" : "DBName" }, " CPU > ", { "Fn::FindInMap" : [ "RDSInstanceLimitsMap", { "Ref" : "DBClassProd" }, "CPULimit" ]}, "% for 5 minutes" ]]},
+			"Namespace": "AWS/RDS",
+			"MetricName": "CPUUtilization",
+			"Statistic": "Average",
+			"Period": "60",
+			"Threshold": { "Fn::FindInMap" : [ "RDSInstanceLimitsMap", { "Ref" : "DBClassProd" }, "CPULimit" ]},
+			"ComparisonOperator": "GreaterThanThreshold",
+			"EvaluationPeriods": "5",
+			"AlarmActions": [ { "Ref": "Notify" } ],
+			"OKActions": [ { "Ref": "Notify" } ],			
+			"Dimensions": [{
+				"Name": "DBInstanceIdentifier",
+				"Value": { "Ref": "RDSInstanceProd" }
+			}]
+		  }
+		}, 
+		"RDSFreeStorageSpaceProd": {
+		  "Type": "AWS::CloudWatch::Alarm",
+		  "Properties": {
+			"AlarmDescription": { "Fn::Join" : [ "", ["Alarm if ", { "Ref" : "DBName" }, " storage space <= ", { "Fn::FindInMap" : [ "RDSInstanceLimitsMap", { "Ref" : "DBClassProd" }, "FreeStorageSpaceLimit" ]}, " for 5 minutes" ]]},
+			"Namespace": "AWS/RDS",
+			"MetricName": "FreeStorageSpace",
+			"Statistic": "Average",
+			"Period": "60",
+			"Threshold": { "Fn::FindInMap" : [ "RDSInstanceLimitsMap", { "Ref" : "DBClassProd" }, "FreeStorageSpaceLimit" ]},
+			"ComparisonOperator": "LessThanOrEqualToThreshold",
+			"EvaluationPeriods": "5",
+			"AlarmActions": [ { "Ref": "Notify" } ],
+			"OKActions": [ { "Ref": "Notify" } ],			
+			"Dimensions": [{
+				"Name": "DBInstanceIdentifier",
+				"Value": { "Ref": "RDSInstanceProd" }
+			}]
+		  }
+		}, 
+		"RDSFreeMemoryProd": {
+		  "Type": "AWS::CloudWatch::Alarm",
+		  "Properties": {
+			"AlarmDescription": { "Fn::Join" : [ "", ["Alarm if ", { "Ref" : "DBName" }, " RAM <= ", { "Fn::FindInMap" : [ "RDSInstanceLimitsMap", { "Ref" : "DBClassProd" }, "FreeMemoryLimit" ]}, " for 5 minutes" ]]},
+			"Namespace": "AWS/RDS",
+			"MetricName": "FreeableMemory",
+			"Statistic": "Average",
+			"Period": "60",
+			"Threshold": { "Fn::FindInMap" : [ "RDSInstanceLimitsMap", { "Ref" : "DBClassProd" }, "FreeMemoryLimit" ]},
+			"ComparisonOperator": "LessThanOrEqualToThreshold",
+			"EvaluationPeriods": "5",
+			"AlarmActions": [ { "Ref": "Notify" } ],
+			"OKActions": [ { "Ref": "Notify" } ],			
+			"Dimensions": [{
+				"Name": "DBInstanceIdentifier",
+				"Value": { "Ref": "RDSInstanceProd" }
+			}]
+		  }
+		}, 
+		"RDSReadIOPSHighProd": {
+		  "Type": "AWS::CloudWatch::Alarm",
+		  "Properties": {
+			"AlarmDescription": { "Fn::Join" : [ "", ["Alarm if ", { "Ref" : "DBName" }, " WriteIOPs > ", { "Fn::FindInMap" : [ "RDSInstanceLimitsMap", { "Ref" : "DBClassProd" }, "ReadIOPSLimit" ]}, " for 5 minutes" ]]},
+			"Namespace": "AWS/RDS",
+			"MetricName": "ReadIOPS",
+			"Statistic": "Average",
+			"Period": "60",
+			"Threshold": { "Fn::FindInMap" : [ "RDSInstanceLimitsMap", { "Ref" : "DBClassProd" }, "ReadIOPSLimit" ]},
+			"ComparisonOperator": "GreaterThanThreshold",
+			"EvaluationPeriods": "5",
+			"AlarmActions": [ { "Ref": "Notify" } ],
+			"OKActions": [ { "Ref": "Notify" } ],			
+			"Dimensions": [{
+				"Name": "DBInstanceIdentifier",
+				"Value": { "Ref": "RDSInstanceProd" }
+			}]
+		  }
+		},
+		"RDSRDSWriteIOPSHighProd": {
+		  "Type": "AWS::CloudWatch::Alarm",
+		  "Properties": {
+			"AlarmDescription": { "Fn::Join" : [ "", ["Alarm if ", { "Ref" : "DBName" }, " WriteIOPs > ", { "Fn::FindInMap" : [ "RDSInstanceLimitsMap", { "Ref" : "DBClassProd" }, "WriteIOPSLimit" ]}, " for 5 minutes" ]]},
+			"Namespace": "AWS/RDS",
+			"MetricName": "WriteIOPS",
+			"Statistic": "Average",
+			"Period": "60",
+			"Threshold": { "Fn::FindInMap" : [ "RDSInstanceLimitsMap", { "Ref" : "DBClassProd" }, "WriteIOPSLimit" ]},
+			"ComparisonOperator": "GreaterThanThreshold",
+			"EvaluationPeriods": "5",
+			"AlarmActions": [ { "Ref": "Notify" } ],
+			"OKActions": [ { "Ref": "Notify" } ],
+			"Dimensions": [{
+				"Name": "DBInstanceIdentifier",
+				"Value": { "Ref": "RDSInstanceProd" }
+			}]
+		  }
+		},
+
+
+
+    "RDSInstanceStage" : {
+      "Type" : "AWS::RDS::DBInstance",
+      "Properties" : {
+        "AllocatedStorage" : { "Ref" : "DBAllocatedStorage" },
+        "DBInstanceClass" : { "Ref" : "DBClassStage" },
+		"MultiAZ" : "false",
+		"DBSnapshotIdentifier" : { "Ref" : "DBCreateFromSnapshot" },
+		"BackupRetentionPeriod" : { "Ref" : "DBBackupRetentionProd" },
+        "Engine" : "MySQL",
+        "EngineVersion" : "5.5",
+        "MasterUsername" : { "Ref" : "DBUser" },
+        "MasterUserPassword" : { "Ref" : "DBPassword" },
+        "DBSubnetGroupName" : { "Ref" : "RDSSubnetGrpStage" },
+        "DBSecurityGroups" : [ { "Ref" : "RDSSecGrpStage" } ],
+        "Tags" : [{
+          "Key" : "Name",
+          "Value" : "Staging DB Server"
+        }]
+      },
+      "DeletionPolicy" : "Snapshot",
+      "DependsOn" : "NATInstance"
+    },
+		"RDSSubnetGrpStage" : {
+		  "Type" : "AWS::RDS::DBSubnetGroup",
+		  "Properties" : {
+			"DBSubnetGroupDescription" : "Subnets available for the staging DB server",
+			"SubnetIds" : [{ "Ref" : "DBSubnetStage1" }, { "Ref" : "DBSubnetStage2" }]
+		  }
+		},
+		"RDSSecGrpStage" : {
+		  "Type" : "AWS::RDS::DBSecurityGroup",
+		  "Properties" : {
+			"GroupDescription" : "Security group for staging DB server",
+			"EC2VpcId" : { "Ref" : "VPC" },
+			"DBSecurityGroupIngress" : [ { "EC2SecurityGroupId" : { "Ref" : "AppSecGrpStage" } },
+										 { "EC2SecurityGroupId" : { "Ref" : "BastionSecGrp" } } ]
+		  }
+		},
+
+
+	"AppRoleProd": {
+		 "Type": "AWS::IAM::Role",
+		 "Properties": {
+			"AssumeRolePolicyDocument": {
+			   "Statement": [ {
+				  "Effect": "Allow",
+				  "Principal": {
+					 "Service": [ "ec2.amazonaws.com" ]
+				  },
+				  "Action": [ "sts:AssumeRole" ]
+			   } ]
+			},
+			"Path": "/",
+			"Policies": [ {
+			   "PolicyName": "DefaultAppRoleProd",
+			   "PolicyDocument": {
+				  "Statement": [ {
+					 "Effect": "Deny",
+					 "Action": "*",
+					 "Resource": "*"
+				  } ]
+			   }
+			   } ]
+			}
+		 },
+		 "AppRoleProfileProd": {
+		 "Type": "AWS::IAM::InstanceProfile",
+		 "Properties": {
+			"Path": "/",
+			"Roles": [ {
+			   "Ref": "AppRoleProd"
+			} ]
+		 }
+	},
+	
+	
+	"AppRoleStage": {
+		 "Type": "AWS::IAM::Role",
+		 "Properties": {
+			"AssumeRolePolicyDocument": {
+			   "Statement": [ {
+				  "Effect": "Allow",
+				  "Principal": {
+					 "Service": [ "ec2.amazonaws.com" ]
+				  },
+				  "Action": [ "sts:AssumeRole" ]
+			   } ]
+			},
+			"Path": "/",
+			"Policies": [ {
+			   "PolicyName": "DefaultAppRoleStage",
+			   "PolicyDocument": {
+				  "Statement": [ {
+					 "Effect": "Deny",
+					 "Action": "*",
+					 "Resource": "*"
+				  } ]
+			   }
+			   } ]
+			}
+		 },
+		 "AppRoleProfileStage": {
+		 "Type": "AWS::IAM::InstanceProfile",
+		 "Properties": {
+			"Path": "/",
+			"Roles": [ {
+			   "Ref": "AppRoleStage"
+			} ]
+		 }
+	}
+
+
+  },
+  "Outputs" : {
+		"URLProd" : {
+		  "Description" : "URL of the production website",
+		  "Value" :  { "Fn::Join" : [ "", [ "http://", { "Fn::GetAtt" : [ "ELBProd", "DNSName" ]}]]}
+		},
+		"URLStage" : {
+		  "Description" : "URL of the staging website",
+		  "Value" :  { "Fn::Join" : [ "", [ "http://", { "Fn::GetAtt" : [ "ELBStage", "DNSName" ]}]]}
+		},
+		"BastionEIP" : {
+		  "Description" : "Bastion host elastic IP address",
+		  "Value" :  { "Ref" : "BastionEIP" }
+		},
+		"VPCID" : {
+		  "Description" : "ID of new VPC",
+		  "Value" :  { "Ref" : "VPC" }
+		}
+  	}
+}
